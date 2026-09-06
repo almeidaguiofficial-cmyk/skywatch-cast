@@ -86,6 +86,19 @@
             android:layout_height="wrap_content"
             android:text="@string/dnd_hint"
             android:textSize="12sp"
+            android:paddingBottom="12dp" />
+
+        <Button
+            android:id="@+id/b_shield"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:text="@string/shield_label" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/shield_hint"
+            android:textSize="12sp"
             android:paddingBottom="24dp" />
 
         <Button

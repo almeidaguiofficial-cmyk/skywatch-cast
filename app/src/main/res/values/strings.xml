@@ -6,6 +6,8 @@
     <string name="default_url">rtmp://SEU-SERVIDOR:1935/live/ID?key=sk_...</string>
     <string name="dnd_label">Bloquear pop-ups durante a transmissão (Não Perturbe)</string>
     <string name="dnd_hint">Liga o Não Perturbe enquanto transmite, pra notificações e chamadas não aparecerem por cima do feed. Requer conceder o acesso 1 vez.</string>
+    <string name="shield_label">🛡️ Blindar contra bloqueio (Xiaomi)</string>
+    <string name="shield_hint">Toque e conceda: 1) Bateria → Sem restrições · 2) Inicialização automática (Autostart) ligada. Sem isso, o MIUI/HyperOS pode matar a transmissão em segundo plano.</string>
     <string name="start">Transmitir</string>
     <string name="stop">Parar</string>
     <string name="status_idle">Pronto</string>

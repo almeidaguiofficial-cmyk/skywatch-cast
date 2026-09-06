@@ -1,10 +1,13 @@
 package com.skywatch.screencast
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.provider.Settings
 import android.view.WindowManager
 import android.widget.Button
@@ -27,6 +30,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvBitrate: TextView
     private lateinit var cbDnd: CheckBox
     private lateinit var bStartStop: Button
+    private lateinit var bShield: Button
     private lateinit var tvStatus: TextView
 
     private val prefs by lazy { getSharedPreferences(ScreenService.PREFS, MODE_PRIVATE) }
@@ -69,6 +73,7 @@ class MainActivity : AppCompatActivity() {
         tvBitrate = findViewById(R.id.tv_bitrate)
         cbDnd = findViewById(R.id.cb_dnd)
         bStartStop = findViewById(R.id.b_start_stop)
+        bShield = findViewById(R.id.b_shield)
         tvStatus = findViewById(R.id.tv_status)
 
         etUrl.setText(prefs.getString("url", getString(R.string.default_url)))
@@ -123,6 +128,9 @@ class MainActivity : AppCompatActivity() {
 
         ensureServiceRunning()
 
+        bShield.setOnClickListener { shieldAgainstKills() }
+        maybeAskBatteryExemption()
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
             != PackageManager.PERMISSION_GRANTED
@@ -156,6 +164,47 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         ScreenService.statusListener = null
+    }
+
+    // ---- Anti-kill Xiaomi/MIUI: isenção de bateria + autostart ----
+
+    private fun isBatteryExempt(): Boolean {
+        val pm = getSystemService(POWER_SERVICE) as PowerManager
+        return pm.isIgnoringBatteryOptimizations(packageName)
+    }
+
+    private fun maybeAskBatteryExemption() {
+        if (!prefs.getBoolean("asked_batt", false) && !isBatteryExempt()) {
+            prefs.edit().putBoolean("asked_batt", true).apply()
+            requestBatteryExemption()
+        }
+    }
+
+    @SuppressLint("BatteryLife")
+    private fun requestBatteryExemption() {
+        try {
+            startActivity(
+                Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName"))
+            )
+        } catch (_: Exception) {
+            try {
+                startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    private fun shieldAgainstKills() {
+        if (!isBatteryExempt()) {
+            toast("Passo 1/2: escolha \"Permitir\" (bateria sem restrições)")
+            requestBatteryExemption()
+        } else {
+            toast("Bateria OK ✔ Agora ligue a Inicialização automática (Autostart)")
+            try {
+                startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+            } catch (_: Exception) {
+            }
+        }
     }
 
     private fun renderFps(fps: Int) {
