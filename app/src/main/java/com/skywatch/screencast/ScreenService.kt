@@ -5,6 +5,7 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.content.res.Configuration
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Build
@@ -52,6 +53,9 @@ class ScreenService : Service(), ConnectChecker {
         getSystemService(NOTIFICATION_SERVICE) as NotificationManager
     }
 
+    private var screenSource: ScreenSource? = null
+    private var encW = 0
+    private var encH = 0
     private var manualStop = false
     private var reconnectAttempts = 0
     private var previousDndFilter = NotificationManager.INTERRUPTION_FILTER_ALL
@@ -78,6 +82,19 @@ class ScreenService : Service(), ConnectChecker {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
 
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        // Tela girou: redimensiona o display virtual pra orientação atual.
+        // Sem isso o Android mantém o mapeamento antigo e a captura sai cortada.
+        val src = screenSource ?: return
+        if (!isStreaming() || encW == 0) return
+        if (newConfig.orientation == Configuration.ORIENTATION_PORTRAIT) {
+            src.resize(encH, encW)
+        } else {
+            src.resize(encW, encH)
+        }
+    }
+
     fun sendIntent(): Intent = projectionManager.createScreenCaptureIntent()
 
     fun isStreaming(): Boolean = ::genericStream.isInitialized && genericStream.isStreaming
@@ -101,7 +118,11 @@ class ScreenService : Service(), ConnectChecker {
             } catch (_: IllegalArgumentException) {
                 false
             }
-            if (ready) break
+            if (ready) {
+                encW = w
+                encH = h
+                break
+            }
         }
         if (!ready) return false
 
@@ -109,7 +130,9 @@ class ScreenService : Service(), ConnectChecker {
             ?: throw IllegalStateException("MediaProjection nula")
         mediaProjection = mp
         return try {
-            genericStream.changeVideoSource(ScreenSource(applicationContext, mp))
+            val source = ScreenSource(applicationContext, mp)
+            screenSource = source
+            genericStream.changeVideoSource(source)
             true
         } catch (_: IllegalArgumentException) {
             false
