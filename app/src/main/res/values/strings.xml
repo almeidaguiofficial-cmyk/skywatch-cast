@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Skywatch Cast</string>
-    <string name="subtitle">Transmite a tela do celular por RTMP, sem limite de tempo.</string>
+    <string name="subtitle">Transmite a tela do celular por RTMP, sem limite de tempo. Só vídeo.</string>
     <string name="url_label">Endereço RTMP do Skywatch</string>
-    <string name="default_url">rtmp://SEU-SERVIDOR:1935/fimi</string>
-    <string name="audio_mic">Enviar áudio do microfone</string>
-    <string name="audio_hint">Desmarcado = só vídeo (recomendado). Marque só se o vídeo não aparecer no Skywatch.</string>
+    <string name="default_url">rtmp://SEU-SERVIDOR:1935/live/ID?key=sk_...</string>
+    <string name="dnd_label">Bloquear pop-ups durante a transmissão (Não Perturbe)</string>
+    <string name="dnd_hint">Liga o Não Perturbe enquanto transmite, pra notificações e chamadas não aparecerem por cima do feed. Requer conceder o acesso 1 vez.</string>
     <string name="start">Transmitir</string>
     <string name="stop">Parar</string>
     <string name="status_idle">Pronto</string>

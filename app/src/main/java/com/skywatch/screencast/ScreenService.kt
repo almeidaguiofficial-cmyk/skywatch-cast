@@ -11,32 +11,36 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.pedro.common.ConnectChecker
-import com.pedro.encoder.input.sources.audio.MicrophoneSource
 import com.pedro.encoder.input.sources.audio.NoAudioSource
 import com.pedro.encoder.input.sources.video.NoVideoSource
 import com.pedro.encoder.input.sources.video.ScreenSource
 import com.pedro.library.generic.GenericStream
 
 /**
- * Serviço em foreground que captura a tela (MediaProjection) e empurra por RTMP.
- * Roda como foreground service tipo mediaProjection, então continua transmitindo
- * mesmo com o app do drone (Fimi Navi) na frente.
+ * Foreground service (tipo mediaProjection) que captura a tela e empurra por RTMP.
+ * - Vídeo only (sem áudio). Resolução da tela, FPS e bitrate escolhidos pelo usuário.
+ * - Continua em segundo plano com o app do drone na frente.
+ * - Reconecta sozinho se a conexão cair.
+ * - Liga "Não Perturbe" enquanto transmite (se autorizado) pra segurar pop-ups.
  */
 class ScreenService : Service(), ConnectChecker {
 
     companion object {
+        const val PREFS = "skywatch"
+        const val KEY_FPS = "fps"
+        const val KEY_BITRATE_KBPS = "bitrate_kbps"
+        const val KEY_DND = "dnd"
+        const val DEFAULT_FPS = 30
+        const val DEFAULT_BITRATE_KBPS = 2500
+
         private const val CHANNEL_ID = "skywatch_screencast"
         private const val NOTIFY_ID = 3210
+        private const val RECONNECT_DELAY_MS = 5000L
+
         var INSTANCE: ScreenService? = null
 
-        // Perfil de vídeo (landscape). Segure o controle/celular deitado durante o voo.
-        private const val WIDTH = 1280
-        private const val HEIGHT = 720
-        private const val V_BITRATE = 2_000_000 // ~2 Mbps: bom equilíbrio pra 4G
-        private const val FPS = 30
-        private const val ROTATION = 0 // 0 = landscape, 90 = portrait
-        private const val SAMPLE_RATE = 32_000
-        private const val A_BITRATE = 128_000
+        /** Callback de status pra UI (setado pela MainActivity). Estático pra sobreviver ao ciclo do serviço. */
+        var statusListener: ((String) -> Unit)? = null
     }
 
     private lateinit var genericStream: GenericStream
@@ -44,32 +48,30 @@ class ScreenService : Service(), ConnectChecker {
     private val projectionManager by lazy {
         getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
     }
-    private var callback: ConnectChecker? = null
-    private var prepared = false
+    private val notificationManager by lazy {
+        getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+    }
+
+    private var manualStop = false
+    private var reconnectAttempts = 0
+    private var previousDndFilter = NotificationManager.INTERRUPTION_FILTER_ALL
+    private var dndApplied = false
 
     override fun onCreate() {
         super.onCreate()
-        val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            nm.createNotificationChannel(
+            notificationManager.createNotificationChannel(
                 NotificationChannel(CHANNEL_ID, "Skywatch Screencast", NotificationManager.IMPORTANCE_LOW)
             )
         }
-
-        val useMic = getSharedPreferences("skywatch", MODE_PRIVATE).getBoolean("audio_mic", false)
-        val audioSource = if (useMic) MicrophoneSource() else NoAudioSource()
-
-        genericStream = GenericStream(baseContext, this, NoVideoSource(), audioSource).apply {
-            // MediaProjection só gera frame quando a tela muda; força um fps mínimo constante.
-            getGlInterface().setForceRender(true, FPS)
+        // Sem vídeo/áudio ainda: o vídeo vira ScreenSource ao transmitir; áudio desativado.
+        genericStream = GenericStream(baseContext, this, NoVideoSource(), NoAudioSource())
+        // O pipeline exige preparar o áudio mesmo desativado (NoAudioSource não usa microfone).
+        try {
+            genericStream.prepareAudio(32000, true, 128_000)
+        } catch (_: IllegalArgumentException) {
         }
-        prepared = try {
-            genericStream.prepareVideo(WIDTH, HEIGHT, V_BITRATE, FPS, rotation = ROTATION) &&
-                genericStream.prepareAudio(SAMPLE_RATE, true, A_BITRATE)
-        } catch (e: IllegalArgumentException) {
-            false
-        }
-        if (prepared) INSTANCE = this
+        INSTANCE = this
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -80,36 +82,78 @@ class ScreenService : Service(), ConnectChecker {
 
     fun isStreaming(): Boolean = ::genericStream.isInitialized && genericStream.isStreaming
 
-    fun setCallback(cb: ConnectChecker?) {
-        callback = cb
-    }
-
+    /** Prepara vídeo com resolução da tela + FPS/bitrate do usuário e injeta a captura de tela. */
     fun prepareStream(resultCode: Int, data: Intent): Boolean {
         startForegroundNotification()
         if (genericStream.isStreaming) genericStream.stopStream()
         mediaProjection?.stop()
+
+        val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+        val fps = prefs.getInt(KEY_FPS, DEFAULT_FPS).coerceIn(10, 60)
+        val bitrate = prefs.getInt(KEY_BITRATE_KBPS, DEFAULT_BITRATE_KBPS).coerceIn(300, 20000) * 1000
+
+        genericStream.getGlInterface().setForceRender(true, fps)
+
+        var ready = false
+        for ((w, h) in ScreenUtils.captureCandidates(this)) {
+            ready = try {
+                genericStream.prepareVideo(w, h, bitrate, fps, rotation = 0)
+            } catch (_: IllegalArgumentException) {
+                false
+            }
+            if (ready) break
+        }
+        if (!ready) return false
+
         val mp = projectionManager.getMediaProjection(resultCode, data)
             ?: throw IllegalStateException("MediaProjection nula")
         mediaProjection = mp
         return try {
             genericStream.changeVideoSource(ScreenSource(applicationContext, mp))
             true
-        } catch (e: IllegalArgumentException) {
+        } catch (_: IllegalArgumentException) {
             false
         }
     }
 
     fun startStream(endpoint: String) {
         if (::genericStream.isInitialized && !genericStream.isStreaming) {
+            manualStop = false
+            reconnectAttempts = 0
+            applyDnd()
             genericStream.startStream(endpoint)
         }
     }
 
     fun stopStream() {
+        manualStop = true
+        stopStreamInternal()
+        postStatus("Parado")
+    }
+
+    private fun stopStreamInternal() {
         if (::genericStream.isInitialized && genericStream.isStreaming) {
             genericStream.stopStream()
         }
+        restoreDnd()
         stopForeground(STOP_FOREGROUND_REMOVE)
+    }
+
+    // ---- Não Perturbe (segura pop-ups/chamadas durante a transmissão) ----
+
+    private fun applyDnd() {
+        val on = getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(KEY_DND, false)
+        if (!on || !notificationManager.isNotificationPolicyAccessGranted) return
+        previousDndFilter = notificationManager.currentInterruptionFilter
+        notificationManager.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_ALARMS)
+        dndApplied = true
+    }
+
+    private fun restoreDnd() {
+        if (dndApplied && notificationManager.isNotificationPolicyAccessGranted) {
+            notificationManager.setInterruptionFilter(previousDndFilter)
+        }
+        dndApplied = false
     }
 
     private fun startForegroundNotification() {
@@ -127,42 +171,61 @@ class ScreenService : Service(), ConnectChecker {
         }
     }
 
+    private fun postStatus(text: String) {
+        statusListener?.invoke(text)
+    }
+
     override fun onDestroy() {
         super.onDestroy()
+        manualStop = true
         if (::genericStream.isInitialized) {
             if (genericStream.isStreaming) genericStream.stopStream()
             genericStream.release()
         }
+        restoreDnd()
         mediaProjection?.stop()
         mediaProjection = null
         INSTANCE = null
     }
 
+    // ---- ConnectChecker: status + reconexão automática ----
+
     override fun onConnectionStarted(url: String) {
-        callback?.onConnectionStarted(url)
+        postStatus("Conectando…")
     }
 
     override fun onConnectionSuccess() {
-        callback?.onConnectionSuccess()
-    }
-
-    override fun onNewBitrate(bitrate: Long) {
-        callback?.onNewBitrate(bitrate)
+        reconnectAttempts = 0
+        postStatus("● No ar")
     }
 
     override fun onConnectionFailed(reason: String) {
-        callback?.onConnectionFailed(reason)
+        if (manualStop) return
+        reconnectAttempts++
+        val client = genericStream.getStreamClient()
+        client.setReTries(999_999)
+        val retrying = client.reTry(RECONNECT_DELAY_MS, reason)
+        if (retrying) {
+            val hint = if (reconnectAttempts >= 12) " — confira a internet do celular" else ""
+            postStatus("Reconectando… (tentativa $reconnectAttempts)$hint")
+        } else {
+            stopStreamInternal()
+            postStatus("Falhou: $reason. Toque em Transmitir pra tentar de novo.")
+        }
     }
 
+    override fun onNewBitrate(bitrate: Long) {}
+
     override fun onDisconnect() {
-        callback?.onDisconnect()
+        postStatus("Desconectado")
     }
 
     override fun onAuthError() {
-        callback?.onAuthError()
+        // Key errada: reconectar não resolve — pare e avise pra corrigir a URL.
+        manualStop = true
+        stopStreamInternal()
+        postStatus("Erro de key/autenticação. Confira a URL (o ?key=...).")
     }
 
-    override fun onAuthSuccess() {
-        callback?.onAuthSuccess()
-    }
+    override fun onAuthSuccess() {}
 }

@@ -5,25 +5,35 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
+import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
-import com.pedro.common.ConnectChecker
 
-class MainActivity : AppCompatActivity(), ConnectChecker {
+class MainActivity : AppCompatActivity() {
 
     private lateinit var etUrl: EditText
-    private lateinit var cbAudio: CheckBox
+    private lateinit var tvResolution: TextView
+    private lateinit var sbFps: SeekBar
+    private lateinit var tvFps: TextView
+    private lateinit var sbBitrate: SeekBar
+    private lateinit var tvBitrate: TextView
+    private lateinit var cbDnd: CheckBox
     private lateinit var bStartStop: Button
     private lateinit var tvStatus: TextView
 
-    private val prefs by lazy { getSharedPreferences("skywatch", MODE_PRIVATE) }
+    private val prefs by lazy { getSharedPreferences(ScreenService.PREFS, MODE_PRIVATE) }
+
+    // FPS 10..60  -> progress 0..50 ; Bitrate 500..12000 kbps passo 250 -> progress 0..46
+    private val bitrateMinKbps = 500
+    private val bitrateStepKbps = 250
 
     private val projectionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -33,28 +43,13 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
         if (result.resultCode == RESULT_OK && data != null && service != null) {
             if (service.prepareStream(result.resultCode, data)) {
                 service.startStream(currentUrl())
-                setUiStreaming(true)
-                setStatus("Conectando…")
             } else {
                 toast("Falha ao preparar a transmissão")
-                setUiStreaming(false)
             }
         } else {
             toast("Captura de tela negada")
-            setUiStreaming(false)
         }
-    }
-
-    private val micLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (granted) {
-            prefs.edit().putBoolean("audio_mic", true).apply()
-            restartService()
-        } else {
-            cbAudio.isChecked = false
-            toast("Sem permissão de microfone — seguindo só com vídeo")
-        }
+        refreshUi()
     }
 
     private val notifLauncher = registerForActivityResult(
@@ -67,12 +62,64 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
         setContentView(R.layout.activity_main)
 
         etUrl = findViewById(R.id.et_url)
-        cbAudio = findViewById(R.id.cb_audio)
+        tvResolution = findViewById(R.id.tv_resolution)
+        sbFps = findViewById(R.id.sb_fps)
+        tvFps = findViewById(R.id.tv_fps)
+        sbBitrate = findViewById(R.id.sb_bitrate)
+        tvBitrate = findViewById(R.id.tv_bitrate)
+        cbDnd = findViewById(R.id.cb_dnd)
         bStartStop = findViewById(R.id.b_start_stop)
         tvStatus = findViewById(R.id.tv_status)
 
         etUrl.setText(prefs.getString("url", getString(R.string.default_url)))
-        cbAudio.isChecked = prefs.getBoolean("audio_mic", false)
+
+        val (w, h) = ScreenUtils.landscapeSize(this)
+        tvResolution.text = "Resolução: ${w}×${h} (tela) — ajusta sozinho se o encoder não aguentar"
+
+        // FPS
+        sbFps.max = 50
+        val fps = prefs.getInt(ScreenService.KEY_FPS, ScreenService.DEFAULT_FPS).coerceIn(10, 60)
+        sbFps.progress = fps - 10
+        renderFps(fps)
+        sbFps.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) = renderFps(10 + p)
+            override fun onStartTrackingTouch(sb: SeekBar?) {}
+            override fun onStopTrackingTouch(sb: SeekBar?) {
+                prefs.edit().putInt(ScreenService.KEY_FPS, 10 + sbFps.progress).apply()
+            }
+        })
+
+        // Bitrate
+        sbBitrate.max = (12000 - bitrateMinKbps) / bitrateStepKbps // 46
+        val kbps = prefs.getInt(ScreenService.KEY_BITRATE_KBPS, ScreenService.DEFAULT_BITRATE_KBPS).coerceIn(500, 12000)
+        sbBitrate.progress = (kbps - bitrateMinKbps) / bitrateStepKbps
+        renderBitrate(kbps)
+        sbBitrate.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) =
+                renderBitrate(bitrateMinKbps + p * bitrateStepKbps)
+            override fun onStartTrackingTouch(sb: SeekBar?) {}
+            override fun onStopTrackingTouch(sb: SeekBar?) {
+                prefs.edit().putInt(ScreenService.KEY_BITRATE_KBPS, bitrateMinKbps + sbBitrate.progress * bitrateStepKbps).apply()
+            }
+        })
+
+        // Não Perturbe
+        cbDnd.isChecked = prefs.getBoolean(ScreenService.KEY_DND, false)
+        cbDnd.setOnClickListener {
+            if (cbDnd.isChecked) {
+                prefs.edit().putBoolean(ScreenService.KEY_DND, true).apply()
+                val nm = getSystemService(NOTIFICATION_SERVICE) as android.app.NotificationManager
+                if (!nm.isNotificationPolicyAccessGranted) {
+                    toast("Permita o acesso \"Não Perturbe\" pro Skywatch Cast")
+                    try {
+                        startActivity(Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS))
+                    } catch (_: Exception) {
+                    }
+                }
+            } else {
+                prefs.edit().putBoolean(ScreenService.KEY_DND, false).apply()
+            }
+        }
 
         ensureServiceRunning()
 
@@ -83,29 +130,6 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
             notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
 
-        setUiStreaming(ScreenService.INSTANCE?.isStreaming() == true)
-
-        cbAudio.setOnClickListener {
-            if (ScreenService.INSTANCE?.isStreaming() == true) {
-                cbAudio.isChecked = !cbAudio.isChecked
-                toast("Pare a transmissão antes de mudar o áudio")
-                return@setOnClickListener
-            }
-            if (cbAudio.isChecked) {
-                if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
-                    == PackageManager.PERMISSION_GRANTED
-                ) {
-                    prefs.edit().putBoolean("audio_mic", true).apply()
-                    restartService()
-                } else {
-                    micLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                }
-            } else {
-                prefs.edit().putBoolean("audio_mic", false).apply()
-                restartService()
-            }
-        }
-
         bStartStop.setOnClickListener {
             val service = ScreenService.INSTANCE
             if (service == null) {
@@ -113,16 +137,33 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
                 toast("Iniciando serviço, toque de novo em 1 segundo")
                 return@setOnClickListener
             }
-            service.setCallback(this)
             if (service.isStreaming()) {
                 service.stopStream()
-                setUiStreaming(false)
-                setStatus("Parado")
             } else {
                 prefs.edit().putString("url", currentUrl()).apply()
                 projectionLauncher.launch(service.sendIntent())
             }
+            refreshUi()
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        ScreenService.statusListener = { text -> runOnUiThread { setStatus(text); refreshUi() } }
+        refreshUi()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        ScreenService.statusListener = null
+    }
+
+    private fun renderFps(fps: Int) {
+        tvFps.text = "FPS: $fps"
+    }
+
+    private fun renderBitrate(kbps: Int) {
+        tvBitrate.text = "Bitrate: %.1f Mbps".format(kbps / 1000.0)
     }
 
     private fun ensureServiceRunning() {
@@ -131,20 +172,15 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
         }
     }
 
-    /** Recria o serviço para aplicar a troca de modo de áudio (vídeo-only <-> microfone). */
-    private fun restartService() {
-        stopService(Intent(this, ScreenService::class.java))
-        bStartStop.postDelayed({ ensureServiceRunning() }, 400)
-        val mode = if (prefs.getBoolean("audio_mic", false)) "microfone" else "só vídeo"
-        setStatus("Áudio: $mode")
-    }
-
     private fun currentUrl(): String = etUrl.text.toString().trim()
 
-    private fun setUiStreaming(streaming: Boolean) {
+    private fun refreshUi() {
+        val streaming = ScreenService.INSTANCE?.isStreaming() == true
         bStartStop.text = getString(if (streaming) R.string.stop else R.string.start)
         etUrl.isEnabled = !streaming
-        cbAudio.isEnabled = !streaming
+        sbFps.isEnabled = !streaming
+        sbBitrate.isEnabled = !streaming
+        cbDnd.isEnabled = !streaming
     }
 
     private fun setStatus(text: String) {
@@ -152,23 +188,4 @@ class MainActivity : AppCompatActivity(), ConnectChecker {
     }
 
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
-
-    override fun onConnectionStarted(url: String) {}
-
-    override fun onConnectionSuccess() = runOnUiThread { setStatus("● No ar") }
-
-    override fun onConnectionFailed(reason: String) = runOnUiThread {
-        ScreenService.INSTANCE?.stopStream()
-        setUiStreaming(false)
-        setStatus("Falhou: $reason")
-        toast("Falhou: $reason")
-    }
-
-    override fun onNewBitrate(bitrate: Long) {}
-
-    override fun onDisconnect() = runOnUiThread { setStatus("Desconectado") }
-
-    override fun onAuthError() = runOnUiThread { setStatus("Erro de autenticação") }
-
-    override fun onAuthSuccess() {}
 }

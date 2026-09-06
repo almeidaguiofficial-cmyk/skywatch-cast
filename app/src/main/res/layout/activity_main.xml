@@ -15,15 +15,14 @@
             android:layout_height="wrap_content"
             android:text="@string/app_name"
             android:textSize="22sp"
-            android:textStyle="bold"
-            android:paddingBottom="4dp" />
+            android:textStyle="bold" />
 
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="@string/subtitle"
             android:textSize="13sp"
-            android:paddingBottom="24dp" />
+            android:paddingBottom="20dp" />
 
         <TextView
             android:layout_width="wrap_content"
@@ -36,22 +35,56 @@
             android:id="@+id/et_url"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:hint="rtmp://servidor:1935/stream"
+            android:hint="rtmp://servidor:1935/live/ID?key=sk_..."
             android:inputType="textUri"
             android:importantForAutofill="no"
             android:maxLines="2" />
 
-        <CheckBox
-            android:id="@+id/cb_audio"
+        <TextView
+            android:id="@+id/tv_resolution"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:paddingTop="16dp"
-            android:text="@string/audio_mic" />
+            android:text="Resolução: —"
+            android:textSize="13sp" />
+
+        <TextView
+            android:id="@+id/tv_fps"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:paddingTop="16dp"
+            android:text="FPS: 30"
+            android:textStyle="bold" />
+
+        <SeekBar
+            android:id="@+id/sb_fps"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
+
+        <TextView
+            android:id="@+id/tv_bitrate"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:paddingTop="12dp"
+            android:text="Bitrate: 2.5 Mbps"
+            android:textStyle="bold" />
+
+        <SeekBar
+            android:id="@+id/sb_bitrate"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
+
+        <CheckBox
+            android:id="@+id/cb_dnd"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingTop="16dp"
+            android:text="@string/dnd_label" />
 
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="@string/audio_hint"
+            android:text="@string/dnd_hint"
             android:textSize="12sp"
             android:paddingBottom="24dp" />
 
