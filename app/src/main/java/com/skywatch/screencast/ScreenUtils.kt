@@ -24,23 +24,12 @@ object ScreenUtils {
     }
 
     /**
-     * Candidatos de resolução pra transmitir, do melhor pro mais seguro:
-     * 1) resolução nativa da tela; 2) nativa reduzida pra caber em 1920 no lado maior;
-     * 3) 1280x720 (fallback garantido). O encoder pega o primeiro que aceitar.
+     * Candidatos de resolução pra transmitir no preset escolhido (padrão 720p), do preferido
+     * pro mais seguro. O encoder pega o primeiro que aceitar. Regras em [Resolution].
      */
-    fun captureCandidates(context: Context): List<Pair<Int, Int>> {
+    fun captureCandidates(context: Context, quality: Resolution.Quality): List<Pair<Int, Int>> {
         val (w, h) = landscapeSize(context)
-        val list = mutableListOf(w to h)
-        if (maxOf(w, h) > 1920) list.add(fit(w, h, 1920))
-        list.add(1280 to 720)
-        return list.distinct()
-    }
-
-    private fun fit(w: Int, h: Int, maxLong: Int): Pair<Int, Int> {
-        val lng = maxOf(w, h)
-        if (lng <= maxLong) return even(w) to even(h)
-        val s = maxLong.toFloat() / lng
-        return even((w * s).toInt()) to even((h * s).toInt())
+        return Resolution.candidates(w, h, quality)
     }
 
     private fun even(v: Int) = if (v % 2 == 0) v else v - 1

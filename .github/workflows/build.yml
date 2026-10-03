@@ -33,11 +33,11 @@ jobs:
         with:
           gradle-version: '8.10.2'
 
-      - name: Build debug APK
+      - name: Test + build debug APK
         shell: bash
         run: |
           set -o pipefail
-          gradle assembleDebug --no-daemon --stacktrace 2>&1 | tee build.log
+          gradle testDebugUnitTest assembleDebug --no-daemon --stacktrace 2>&1 | tee build.log
 
       - name: Upload build log on failure
         if: failure()

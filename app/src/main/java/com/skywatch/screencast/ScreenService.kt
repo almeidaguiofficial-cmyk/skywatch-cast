@@ -12,14 +12,20 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.pedro.common.ConnectChecker
+import com.pedro.common.StreamingStatsReport
+import com.pedro.common.Throughput
 import com.pedro.encoder.input.sources.audio.NoAudioSource
 import com.pedro.encoder.input.sources.video.NoVideoSource
 import com.pedro.encoder.input.sources.video.ScreenSource
 import com.pedro.library.generic.GenericStream
+import com.pedro.library.util.QueueAwareBitrateAdapter
 
 /**
  * Foreground service (tipo mediaProjection) que captura a tela e empurra por RTMP.
- * - Vídeo only (sem áudio). Resolução da tela, FPS e bitrate escolhidos pelo usuário.
+ * - Vídeo only (sem áudio). Resolução (preset, padrão 720p), FPS e bitrate MÁXIMO do usuário.
+ * - Bitrate adaptativo: mede a fila de envio 1x/s e baixa/sobe o bitrate pro que a internet
+ *   aguenta (antes era fixo — a fila de 400 quadros enchia, atrasava até ~13 s e a biblioteca
+ *   descartava quadros, o que borrava a imagem até o próximo quadro-chave).
  * - Continua em segundo plano com o app do drone na frente.
  * - Reconecta sozinho se a conexão cair.
  * - Liga "Não Perturbe" enquanto transmite (se autorizado) pra segurar pop-ups.
@@ -31,12 +37,20 @@ class ScreenService : Service(), ConnectChecker {
         const val KEY_FPS = "fps"
         const val KEY_BITRATE_KBPS = "bitrate_kbps"
         const val KEY_DND = "dnd"
+        const val KEY_QUALITY = "quality"
         const val DEFAULT_FPS = 30
         const val DEFAULT_BITRATE_KBPS = 2500
 
         private const val CHANNEL_ID = "skywatch_screencast"
         private const val NOTIFY_ID = 3210
         private const val RECONNECT_DELAY_MS = 5000L
+
+        /** Piso do bitrate adaptativo: abaixo disso o 720p vira borrão de qualquer jeito. */
+        private const val MIN_BITRATE = 300_000
+        /** Atraso máximo na fila de envio antes de descartar o atraso e voltar ao vivo. */
+        private const val MAX_BACKLOG_SECONDS = 3.0
+        private const val BACKLOG_FLUSH_COOLDOWN_MS = 5000L
+        private const val KEYFRAME_REQUEST_COOLDOWN_MS = 1000L
 
         var INSTANCE: ScreenService? = null
 
@@ -60,6 +74,13 @@ class ScreenService : Service(), ConnectChecker {
     private var reconnectAttempts = 0
     private var previousDndFilter = NotificationManager.INTERRUPTION_FILTER_ALL
     private var dndApplied = false
+
+    private var bitrateAdapter: QueueAwareBitrateAdapter? = null
+    private var targetBitrate = 0
+    private var connected = false
+    private var lastDroppedFrames = 0L
+    private var lastKeyframeRequest = 0L
+    private var lastBacklogFlush = 0L
 
     override fun onCreate() {
         super.onCreate()
@@ -108,11 +129,12 @@ class ScreenService : Service(), ConnectChecker {
         val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
         val fps = prefs.getInt(KEY_FPS, DEFAULT_FPS).coerceIn(10, 60)
         val bitrate = prefs.getInt(KEY_BITRATE_KBPS, DEFAULT_BITRATE_KBPS).coerceIn(300, 20000) * 1000
+        val quality = Resolution.Quality.fromKey(prefs.getString(KEY_QUALITY, null))
 
         genericStream.getGlInterface().setForceRender(true, fps)
 
         var ready = false
-        for ((w, h) in ScreenUtils.captureCandidates(this)) {
+        for ((w, h) in ScreenUtils.captureCandidates(this, quality)) {
             ready = try {
                 genericStream.prepareVideo(w, h, bitrate, fps, rotation = 0)
             } catch (_: IllegalArgumentException) {
@@ -125,6 +147,16 @@ class ScreenService : Service(), ConnectChecker {
             }
         }
         if (!ready) return false
+
+        // O bitrate do usuário vira TETO. A biblioteca entrega o estado da fila de envio 1x/s
+        // (onStreamingStats) e o adaptador baixa rápido quando a fila cresce e sobe devagar
+        // quando a rede folga. Piso de 300 kbps.
+        targetBitrate = bitrate
+        lastDroppedFrames = 0
+        bitrateAdapter = QueueAwareBitrateAdapter(bitrate, maxOf(MIN_BITRATE, bitrate / 10)) { b ->
+            targetBitrate = b
+            genericStream.setVideoBitrateOnFly(b)
+        }
 
         val mp = projectionManager.getMediaProjection(resultCode, data)
             ?: throw IllegalStateException("MediaProjection nula")
@@ -155,6 +187,7 @@ class ScreenService : Service(), ConnectChecker {
     }
 
     private fun stopStreamInternal() {
+        connected = false
         if (::genericStream.isInitialized && genericStream.isStreaming) {
             genericStream.stopStream()
         }
@@ -219,10 +252,13 @@ class ScreenService : Service(), ConnectChecker {
 
     override fun onConnectionSuccess() {
         reconnectAttempts = 0
-        postStatus("● No ar")
+        connected = true
+        lastDroppedFrames = 0
+        postStatus("● No ar · ${encW}×${encH}")
     }
 
     override fun onConnectionFailed(reason: String) {
+        connected = false
         if (manualStop) return
         reconnectAttempts++
         val client = genericStream.getStreamClient()
@@ -239,7 +275,44 @@ class ScreenService : Service(), ConnectChecker {
 
     override fun onNewBitrate(bitrate: Long) {}
 
+    /** Chamado 1x/s pela biblioteca (thread principal) com o estado da fila de envio. */
+    override fun onStreamingStats(report: StreamingStatsReport) {
+        if (!connected || !isStreaming()) return
+        bitrateAdapter?.onStreamingStats(report)
+        val client = genericStream.getStreamClient()
+        val now = System.currentTimeMillis()
+
+        // Fila com mais de ~3 s acumulados: quem assiste estaria vendo o passado. Descarta o
+        // atraso e pede quadro-chave pra imagem voltar ao vivo e limpa.
+        val backlogSeconds = report.queueBytesOut * 8.0 / maxOf(targetBitrate, MIN_BITRATE)
+        if (backlogSeconds > MAX_BACKLOG_SECONDS && now - lastBacklogFlush > BACKLOG_FLUSH_COOLDOWN_MS) {
+            lastBacklogFlush = now
+            client.clearCache()
+            requestKeyframe(now, force = true)
+        }
+
+        // Cada quadro descartado pela biblioteca (fila cheia) borra a imagem até o próximo
+        // quadro-chave (até 2 s). Pedir um quadro-chave na hora encurta isso pra ~1 quadro.
+        val dropped = client.getDroppedVideoFrames()
+        if (dropped < lastDroppedFrames) lastDroppedFrames = 0 // contador zera ao reconectar
+        if (dropped > lastDroppedFrames) {
+            lastDroppedFrames = dropped
+            requestKeyframe(now)
+        }
+
+        val mbps = "%.1f".format(report.bitrate / 1_000_000.0).replace('.', ',')
+        val weak = report.throughput == Throughput.INSUFFICIENT
+        postStatus("● No ar · ${encW}×${encH} · $mbps Mbps" + if (weak) " · rede fraca, ajustando" else "")
+    }
+
+    private fun requestKeyframe(now: Long, force: Boolean = false) {
+        if (!force && now - lastKeyframeRequest < KEYFRAME_REQUEST_COOLDOWN_MS) return
+        lastKeyframeRequest = now
+        genericStream.requestKeyframe()
+    }
+
     override fun onDisconnect() {
+        connected = false
         postStatus("Desconectado")
     }
 

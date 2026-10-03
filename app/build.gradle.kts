@@ -13,8 +13,8 @@ android {
         applicationId = "com.skywatch.screencast"
         minSdk = 24
         targetSdk = 34
-        versionCode = 4
-        versionName = "2.2"
+        versionCode = 5
+        versionName = "2.3"
     }
 
     buildTypes {
@@ -40,4 +40,6 @@ dependencies {
     implementation("androidx.appcompat:appcompat:1.7.0")
     // RootEncoder (pedroSG94): encoder RTMP/RTSP/SRT com captura de tela nativa
     implementation("com.github.pedroSG94.RootEncoder:library:2.8.1")
+
+    testImplementation("junit:junit:4.13.2")
 }

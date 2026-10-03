@@ -13,6 +13,8 @@ import android.view.WindowManager
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
+import android.widget.RadioButton
+import android.widget.RadioGroup
 import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
@@ -23,7 +25,7 @@ import androidx.core.content.ContextCompat
 class MainActivity : AppCompatActivity() {
 
     private lateinit var etUrl: EditText
-    private lateinit var tvResolution: TextView
+    private lateinit var rgQuality: RadioGroup
     private lateinit var sbFps: SeekBar
     private lateinit var tvFps: TextView
     private lateinit var sbBitrate: SeekBar
@@ -66,7 +68,7 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
 
         etUrl = findViewById(R.id.et_url)
-        tvResolution = findViewById(R.id.tv_resolution)
+        rgQuality = findViewById(R.id.rg_quality)
         sbFps = findViewById(R.id.sb_fps)
         tvFps = findViewById(R.id.tv_fps)
         sbBitrate = findViewById(R.id.sb_bitrate)
@@ -78,8 +80,21 @@ class MainActivity : AppCompatActivity() {
 
         etUrl.setText(prefs.getString("url", getString(R.string.default_url)))
 
+        // Resolução: padrão 720p. A nativa da tela (ex.: 2712×1220) espalha o mesmo bitrate por
+        // 3x mais pixels e vira mosaico quando o drone se move.
         val (w, h) = ScreenUtils.landscapeSize(this)
-        tvResolution.text = "Resolução: ${w}×${h} (tela) — ajusta sozinho se o encoder não aguentar"
+        findViewById<RadioButton>(R.id.rb_native).text = "Nativa da tela (${w}×${h}): só em Wi-Fi forte"
+        val qualityIds = mapOf(
+            Resolution.Quality.HD to R.id.rb_q720,
+            Resolution.Quality.FULL_HD to R.id.rb_q1080,
+            Resolution.Quality.NATIVE to R.id.rb_native,
+        )
+        val savedQuality = Resolution.Quality.fromKey(prefs.getString(ScreenService.KEY_QUALITY, null))
+        rgQuality.check(qualityIds.getValue(savedQuality))
+        rgQuality.setOnCheckedChangeListener { _, checkedId ->
+            val q = qualityIds.entries.firstOrNull { it.value == checkedId }?.key ?: Resolution.Quality.DEFAULT
+            prefs.edit().putString(ScreenService.KEY_QUALITY, q.key).apply()
+        }
 
         // FPS
         sbFps.max = 50
@@ -212,7 +227,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun renderBitrate(kbps: Int) {
-        tvBitrate.text = "Bitrate: %.1f Mbps".format(kbps / 1000.0)
+        tvBitrate.text = "Bitrate máximo: %.1f Mbps (baixa sozinho se a rede não aguentar)".format(kbps / 1000.0)
     }
 
     private fun ensureServiceRunning() {
@@ -229,6 +244,7 @@ class MainActivity : AppCompatActivity() {
         etUrl.isEnabled = !streaming
         sbFps.isEnabled = !streaming
         sbBitrate.isEnabled = !streaming
+        for (i in 0 until rgQuality.childCount) rgQuality.getChildAt(i).isEnabled = !streaming
         cbDnd.isEnabled = !streaming
     }
 

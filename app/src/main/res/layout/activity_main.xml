@@ -45,8 +45,33 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:paddingTop="16dp"
-            android:text="Resolução: —"
-            android:textSize="13sp" />
+            android:text="Resolução da transmissão"
+            android:textStyle="bold" />
+
+        <RadioGroup
+            android:id="@+id/rg_quality"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <RadioButton
+                android:id="@+id/rb_q720"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="720p (recomendado): imagem limpa mesmo em 4G" />
+
+            <RadioButton
+                android:id="@+id/rb_q1080"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="1080p: só com internet boa" />
+
+            <RadioButton
+                android:id="@+id/rb_native"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Nativa da tela" />
+        </RadioGroup>
 
         <TextView
             android:id="@+id/tv_fps"
